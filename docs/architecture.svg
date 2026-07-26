@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+  <rect width="960" height="360" fill="#0d1117"/>
+  <text x="480" y="40" fill="#c9d1d9" font-size="20" font-weight="700" text-anchor="middle">Mini-OpenClaw + Agent Harness — 架构示意（占位图，可替换）</text>
+
+  <!-- request pipeline -->
+  <text x="40" y="90" fill="#8b949e" font-size="13" font-weight="600">检索与生成链路</text>
+  <g fill="#161b22" stroke="#30363d">
+    <rect x="40"  y="100" width="120" height="54" rx="8"/>
+    <rect x="192" y="100" width="120" height="54" rx="8"/>
+    <rect x="344" y="100" width="150" height="54" rx="8"/>
+    <rect x="526" y="100" width="130" height="54" rx="8"/>
+    <rect x="688" y="100" width="120" height="54" rx="8"/>
+    <rect x="840" y="100" width="90"  height="54" rx="8"/>
+  </g>
+  <g fill="#c9d1d9" font-size="13" text-anchor="middle">
+    <text x="100" y="132">Guardian 安检</text>
+    <text x="252" y="132">query embedding</text>
+    <text x="419" y="132">混合检索 (dense/BM25)</text>
+    <text x="591" y="132">证据回跳取原文</text>
+    <text x="748" y="132">拼 prompt</text>
+    <text x="885" y="132">主模型</text>
+  </g>
+  <g stroke="#58a6ff" stroke-width="2" fill="none" marker-end="url(#a)">
+    <path d="M160 127 H192"/><path d="M312 127 H344"/><path d="M494 127 H526"/>
+    <path d="M656 127 H688"/><path d="M808 127 H840"/>
+  </g>
+
+  <!-- tool pipeline -->
+  <text x="40" y="210" fill="#8b949e" font-size="13" font-weight="600">工具执行链路（纵深防御）</text>
+  <g fill="#161b22" stroke="#30363d">
+    <rect x="40"  y="220" width="150" height="54" rx="8"/>
+    <rect x="222" y="220" width="150" height="54" rx="8"/>
+    <rect x="404" y="220" width="170" height="54" rx="8"/>
+    <rect x="606" y="220" width="150" height="54" rx="8"/>
+  </g>
+  <g fill="#c9d1d9" font-size="13" text-anchor="middle">
+    <text x="115" y="252">PreToolUse 检查</text>
+    <text x="297" y="252">Docker 沙箱执行</text>
+    <text x="489" y="252">PostToolUse 扫密钥</text>
+    <text x="681" y="252">Offload 卸载</text>
+  </g>
+  <g stroke="#3fb950" stroke-width="2" fill="none" marker-end="url(#b)">
+    <path d="M190 247 H222"/><path d="M372 247 H404"/><path d="M574 247 H606"/>
+  </g>
+
+  <!-- harness loop -->
+  <text x="40" y="320" fill="#8b949e" font-size="13" font-weight="600">Agent Harness</text>
+  <text x="40" y="342" fill="#c9d1d9" font-size="13">前馈(目标/规则/环境) → ReAct 循环 → 完成防线(传感器 → 清单 → 独立验收) → 交接</text>
+
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#58a6ff"/></marker>
+    <marker id="b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#3fb950"/></marker>
+  </defs>
+</svg>
