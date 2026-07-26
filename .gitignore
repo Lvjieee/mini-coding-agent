@@ -1,0 +1,45 @@
+.env
+.venv/
+.cursor/
+openspec/
+backend/.env
+backend/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+backend/config/.env
+backend/knowledge/*
+backend/memory_module_v1/sessions/*.json
+backend/memory_module_v1/sessions/archive/*.json
+backend/memory_module_v2/eval/*.jsonl
+backend/memory_module_v2/eval/*.json
+backend/storage/memory_index/*
+!backend/storage/memory_index/.gitkeep
+backend/storage/knowledge/*
+!backend/storage/knowledge/.gitkeep
+frontend/.next/
+frontend/node_modules/
+frontend/.npm-cache/
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db
+# 测试和临时文件
+backend/test_*.py
+backend/make_sessions.py
+backend/workspace/tool_outputs/
+# pip 误生成的版本号文件
+backend/[0-9]*.[0-9]*
+# BM25/chroma 索引（含他人旧数据，应重建而非提交）
+**/bm25/
+**/chroma_memory/
+storage/
+# Agent Harness 评测运行产物（可由 run_eval.py 重新生成，不入库）
+agent-harness/eval/runs/
+# Agent 工作区运行时状态
+**/.harness/
