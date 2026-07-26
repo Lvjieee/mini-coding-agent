@@ -1,0 +1,6 @@
+# 无第三方运行依赖：全部基于 Python >= 3.10 标准库实现。
+# 模型接入使用任何 OpenAI 兼容 HTTP 接口（urllib），无需 SDK。
+#
+# 可选（开发用）：
+# pytest
+# ruff
