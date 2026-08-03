@@ -27,6 +27,8 @@
   代价约 3.3× 轮次 → 见 [`eval/`](eval/README.md)。
 - **纯前馈/反馈解耦**：上下文只追加（Prompt Cache 友好）、传感器计算型优先、验收器 fail-closed。
 - **零依赖**：仅 Python 标准库，`urllib` 直连模型网关，易审计、易嵌入。
+- **流式与 tool_calls 拼装**：`streaming.py` 按 `index` 累积被切碎的 `arguments`，
+  断流不重试（避免重复执行），拼不出合法参数就保留原文交给工具层报错。
 - **可插拔执行层**：同一套完成判定可驱动自带 `AgentLoop`，也可套在 Claude Code CLI 外面
   （`claude_runtime.py`）；装配示例见 [`examples/ci_gate.py`](examples/ci_gate.py)。
 

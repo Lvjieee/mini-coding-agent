@@ -42,6 +42,7 @@ class AgentLoop:
         evaluator_client: ModelClient | None = None,
         budget: Budget | None = None,
         enable_defense: bool = True,  # 关闭 = 无条件接受模型的完成宣称（用于对照实验）
+        on_text=None,  # 传入回调则改走流式，边生成边输出
     ):
         self.client = client
         self.context = context
@@ -54,6 +55,7 @@ class AgentLoop:
         self.evaluator_client = evaluator_client
         self.budget = budget or Budget()
         self.enable_defense = enable_defense
+        self.on_text = on_text
         self.audit = registry.ctx.audit
         # 完成防线抽成独立组件，与 ClaudeCodeRuntime 共用同一套验收逻辑
         self.defense = CompletionDefense(
@@ -82,7 +84,7 @@ class AgentLoop:
         while turns < self.budget.max_turns:
             turns += 1
             self._compact(history)
-            msg = self.client.complete([system] + history, self.registry.schemas())
+            msg = self._call_model([system] + history)
             history.append(msg)
 
             if msg.tool_calls:
@@ -120,6 +122,16 @@ class AgentLoop:
         return self._stop("budget_turns", goal, history,
                           turns=turns, tool_calls=tool_calls,
                           rejections=self.budget.completion_retries - retries_left)
+
+    # ---------- 模型调用 ----------
+
+    def _call_model(self, messages: list[Message]) -> Message:
+        """有 on_text 且客户端支持流式时走流式，否则退回一次性请求。"""
+        schemas = self.registry.schemas()
+        stream = getattr(self.client, "complete_stream", None)
+        if self.on_text is not None and callable(stream):
+            return stream(messages, schemas, on_text=self.on_text)
+        return self.client.complete(messages, schemas)
 
     # ---------- 完成防线 ----------
     # 具体逻辑见 defense.py 的 CompletionDefense；这里只保留调用点，

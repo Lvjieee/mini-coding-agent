@@ -84,6 +84,7 @@ def main():
         skills=skills,
         evaluator_client=evaluator,
         budget=Budget(),
+        on_text=lambda text: print(text, end="", flush=True),  # 流式输出模型思路
     )
     result = loop.run(goal)
     print(f"\n状态: {result['status']}")
