@@ -25,6 +25,69 @@
 
 ---
 
+## 🎯 它解决什么问题
+
+把 Agent 接进真实交付流程时，最贵的失败不是「模型不会写代码」，而是**它说自己写完了**：
+测试没跑、边界没覆盖、清单条目被悄悄降标准，而流程已经把这份产出当成完成态往下传。
+模型越弱、任务越长，这种「假完成」越多——在本仓库的 A/B 评测里，朴素循环有 **78%** 的运行
+宣称完成却过不了隐藏测试。
+
+Aegis 不替换你正在用的 Agent。它包在执行引擎外面，做一件事：
+**在「宣称完成」和「进入交付」之间加一道防线**——先跑项目自己的确定性检查，再核对行为级验收清单，
+最后交给独立的只读验收子代理；任何一关不过就带着失败原因把任务打回去重做。
+
+典型用法是 **CI 验收网关**：Claude Code（或任何 OpenAI 兼容模型）负责改代码，Aegis 负责判定
+能不能算完成，并用进程退出码决定这次改动是否允许合入。
+
+```
+Claude Code 改完代码，宣称"任务完成"
+        │
+        ▼
+[Aegis] 跑项目自己的检查命令（pre_done 传感器）
+        │  不通过
+        ▼
+带着失败输出，用同一 session --resume 打回重做（上限 3 次）
+        │  通过
+        ▼
+退出码 0 → 允许交付；否则退出码 1 + 交接记录 → CI 拦下
+```
+
+<div align="center">
+  <img src="docs/ci-gate-demo.gif" alt="CI 验收网关演示：假完成被测试失败打回，修好后放行" width="92%">
+</div>
+
+上图是真实运行输出（由 [`docs/render_demo.py`](docs/render_demo.py) 直接跑命令渲染）：
+先跑一次正常放行，再用 `--retries 0` 跑一次被拦下，退出码分别是 `0` 和 `1`。
+
+一条命令看到完整链路（用脚本化的假 CLI，不需要任何 API key）：
+
+```bash
+python agent-harness/examples/ci_gate.py --mock
+```
+
+它会建一个临时代码库（`days_between` 未实现 + 一份真实单元测试），
+让假 CLI 先交一版「看起来对但方向错」的实现并宣称完成，被防线用测试失败输出打回，
+第二次修好后网关放行：
+
+```text
+状态      : done
+模型轮次  : 4
+防线打回  : 1
+网关结论  : 通过，允许交付
+```
+
+把 `--retries 0` 加上就能看到被拦下的那一面：退出码 `1`、写出交接记录、失败测试原文回传。
+接真实 Claude Code 只需换成自己的仓库和检查命令：
+
+```bash
+python agent-harness/examples/ci_gate.py \
+  --workspace /path/to/repo \
+  --goal "修掉 days_between 的符号 bug" \
+  --check "python3 -m pytest -q"
+```
+
+---
+
 ## ✨ 亮点
 
 - **完成防线（Completion Defense）** — 对抗 Agent「过早宣布完成」这一核心失效模式。A/B 评测中
@@ -39,6 +102,7 @@
 
 ## 📑 目录
 
+- [它解决什么问题](#-它解决什么问题)
 - [项目概览](#-项目概览)
 - [Agent Harness](#️-agent-harness)
 - [记忆与检索](#-记忆与检索)
@@ -127,7 +191,7 @@ Agent Harness 是本项目的核心。它把「模型」当作无状态函数，
 
 - 行为级验收清单（JSON、pass/fail、禁止删条目和降标准、pass 必须附证据）→ `tasks.py Checklist`
 - 进度文件交接、恢复现场 → `tasks.py Handoff`，开跑时注入「上次交接记录」
-- Planner / Generator / Evaluator 分离，验收可用不同模型 → `subagent.py` + `loop.py _evaluate`
+- Planner / Generator / Evaluator 分离，验收可用不同模型 → `subagent.py` + `defense.py CompletionDefense`
 
 **OpenAI Codex — 规则文件 + 确定性检查**
 
@@ -168,6 +232,27 @@ python agent-harness/examples/run_task.py "把 utils/date.py 里的时区 bug �
 
 运行状态保存在工作区 `.harness/` 下：`checklist.json`、`HANDOFF.md`、`memory.json`、
 `audit.jsonl`、`overflow/`（外置的长结果）。中断后重跑同一目标即可从交接记录恢复现场。
+
+### 可插拔执行引擎
+
+Harness 的验收与交付契约独立于模型循环：内置 `AgentLoop` 可直接调用 OpenAI 兼容接口，
+`ClaudeCodeRuntime` 则把执行交给 Claude Code CLI，并在 CLI 进程外复用同一套完成防线。
+首次执行通过 `claude -p ... --output-format json`，防线未通过时使用同一 `session_id`
+通过 `--resume` 注入修正信息，最多返工 3 次；CLI 报错、超时、JSON 解析失败和额度错误均不会被当作完成。
+装配示例见 [`examples/ci_gate.py`](agent-harness/examples/ci_gate.py)（CI 验收网关，可 `--mock` 离线运行）。
+
+使用 Claude Code runtime 时，实际模型由 Claude Code 的环境变量决定。例如：
+
+```bash
+export ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic
+export ANTHROPIC_AUTH_TOKEN=your-zhipu-key
+export ANTHROPIC_MODEL=glm-4-flash
+```
+
+Claude Code CLI 本身是本地执行程序，安装不等于获得 Anthropic 模型额度；配置代理后，实际请求由代理服务商计量。
+控制台现金余额为零也不必然代表免费模型配额为零，但免费配额通常受每日、每分钟、并发和账户策略限制。
+Claude Code 输出的 `total_cost_usd` 是按 Anthropic 定价计算的估算字段，使用代理时不能当作真实账单。
+建议先跑一个任务确认 `is_error`、`session_id`、`num_turns` 和 `modelUsage`，再扩大评测规模。
 
 ### 已知边界
 
