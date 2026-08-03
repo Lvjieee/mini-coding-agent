@@ -18,6 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "docs", "ci-gate-demo.gif")
 
 FONT_PATH = "/System/Library/Fonts/Menlo.ttc"
+CJK_FONT_PATH = "/System/Library/Fonts/Hiragino Sans GB.ttc"
 FONT_SIZE = 18
 LINE_HEIGHT = 26
 PADDING = 18
@@ -71,36 +72,53 @@ def collect_lines() -> list[str]:
     return lines
 
 
-def truncate(draw, font, text: str, max_width: int) -> str:
-    if draw.textlength(text, font=font) <= max_width:
+def truncate(measure, text: str, max_width: int) -> str:
+    if measure(text) <= max_width:
         return text
-    while text and draw.textlength(text + "…", font=font) > max_width:
+    while text and measure(text + "…") > max_width:
         text = text[:-1]
     return text + "…"
 
 
 def render(lines: list[str]) -> None:
-    font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+    # Menlo 没有中文字形，中日韩字符改用 Hiragino，按字符切换字体避免出现方块
+    mono = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+    cjk = ImageFont.truetype(CJK_FONT_PATH, FONT_SIZE)
+    baseline = mono.getmetrics()[0]
+
+    def font_for(char: str):
+        return cjk if ord(char) > 0x2E7F else mono
+
     height = CHROME_HEIGHT + PADDING * 2 + ROWS * LINE_HEIGHT
     max_text_width = WIDTH - PADDING * 2
 
     def frame(visible: list[str]) -> Image.Image:
         image = Image.new("RGB", (WIDTH, height), BG)
         draw = ImageDraw.Draw(image)
+
+        def measure(text: str) -> float:
+            return sum(draw.textlength(char, font=font_for(char)) for char in text)
+
+        def write(x: float, y: int, text: str, fill) -> float:
+            for char in text:
+                font = font_for(char)
+                draw.text((x, y + baseline), char, font=font, fill=fill, anchor="ls")
+                x += draw.textlength(char, font=font)
+            return x
+
         draw.rectangle([0, 0, WIDTH, CHROME_HEIGHT], fill=CHROME)
         for index, dot in enumerate(((255, 95, 86), (255, 189, 46), (39, 201, 63))):
             cx = PADDING + index * 20
             draw.ellipse([cx, 12, cx + 11, 23], fill=dot)
-        draw.text((WIDTH // 2 - 90, 9), "aegis — ci gate demo", font=font, fill=DIM)
+        draw.text((WIDTH // 2 - 90, 9), "aegis — ci gate demo", font=mono, fill=DIM)
         for row, line in enumerate(visible[-ROWS:]):
             y = CHROME_HEIGHT + PADDING + row * LINE_HEIGHT
-            text = truncate(draw, font, line, max_text_width)
+            text = truncate(measure, line, max_text_width)
             if text.startswith("$ "):
-                draw.text((PADDING, y), "$", font=font, fill=GREEN)
-                draw.text((PADDING + draw.textlength("$ ", font=font), y),
-                          text[2:], font=font, fill=WHITE)
+                x = write(PADDING, y, "$ ", GREEN)
+                write(x, y, text[2:], WHITE)
             else:
-                draw.text((PADDING, y), text, font=font, fill=color_for(line))
+                write(PADDING, y, text, color_for(line))
         return image
 
     frames = [frame(lines[:i + 1]) for i in range(len(lines))]
@@ -112,7 +130,8 @@ def render(lines: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    if not os.path.exists(FONT_PATH):
-        print(f"缺少字体 {FONT_PATH}，请改成本机可用的等宽字体路径。")
-        sys.exit(1)
+    for path in (FONT_PATH, CJK_FONT_PATH):
+        if not os.path.exists(path):
+            print(f"缺少字体 {path}，请改成本机可用的等宽 / 中文字体路径。")
+            sys.exit(1)
     render(collect_lines())
