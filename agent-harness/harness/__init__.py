@@ -7,11 +7,14 @@
 from .audit import AuditLog
 from .builtin_tools import register_builtin
 from .context import ContextBuilder
+from .claude_runtime import ClaudeCodeRuntime
+from .defense import CompletionDefense
 from .guards import FileGuard
 from .loop import AgentLoop, Budget
 from .memory import MemoryStore
 from .model import Message, ModelClient, OpenAICompatClient, ToolCall
 from .policy import ApprovalGate, Policy, Risk
+from .runtime import STATUS_DONE, Runtime, is_delivered
 from .sensors import CallableSensor, CommandSensor, SensorBank
 from .skills import SkillLibrary
 from .subagent import parse_planner_output, run_subagent
@@ -19,10 +22,11 @@ from .tasks import Checklist, Handoff
 from .tools import ToolContext, ToolOutput, ToolRegistry, ToolSpec
 
 __all__ = [
-    "AgentLoop", "ApprovalGate", "AuditLog", "Budget", "CallableSensor",
-    "Checklist", "CommandSensor", "ContextBuilder", "FileGuard", "Handoff",
-    "MemoryStore", "Message", "ModelClient", "OpenAICompatClient", "Policy",
-    "Risk", "SensorBank", "SkillLibrary", "ToolCall", "ToolContext",
-    "ToolOutput", "ToolRegistry", "ToolSpec", "parse_planner_output",
+    "STATUS_DONE", "AgentLoop", "ApprovalGate", "AuditLog", "Budget",
+    "CallableSensor", "Checklist", "ClaudeCodeRuntime", "CommandSensor",
+    "CompletionDefense", "ContextBuilder", "FileGuard", "Handoff", "MemoryStore", "Message",
+    "ModelClient", "OpenAICompatClient", "Policy", "Risk", "Runtime",
+    "SensorBank", "SkillLibrary", "ToolCall", "ToolContext", "ToolOutput",
+    "ToolRegistry", "ToolSpec", "is_delivered", "parse_planner_output",
     "register_builtin", "run_subagent",
 ]

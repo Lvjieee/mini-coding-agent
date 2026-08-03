@@ -14,11 +14,10 @@ import uuid
 from dataclasses import dataclass
 
 from .context import ContextBuilder
+from .defense import CompletionDefense
 from .model import Message, ModelClient
 from .sensors import SensorBank
-from .subagent import parse_evaluator_output, run_subagent
 from .tools import ToolRegistry, render_result
-from .builtin_tools import register_builtin
 
 
 @dataclass
@@ -56,6 +55,15 @@ class AgentLoop:
         self.budget = budget or Budget()
         self.enable_defense = enable_defense
         self.audit = registry.ctx.audit
+        # 完成防线抽成独立组件，与 ClaudeCodeRuntime 共用同一套验收逻辑
+        self.defense = CompletionDefense(
+            sensors=sensors,
+            checklist=checklist,
+            tool_ctx=registry.ctx,
+            client=client,
+            evaluator_client=evaluator_client,
+            audit=self.audit,
+        )
 
     # ---------- 入口 ----------
 
@@ -97,7 +105,7 @@ class AgentLoop:
                 continue
 
             # 模型没有再调用工具 → 视为宣称完成，进入完成防线
-            problems = self._completion_defense(goal) if self.enable_defense else []
+            problems = self.defense.check(goal) if self.enable_defense else []
             if not problems:
                 return self._finish(goal, msg.content, turns, tool_calls,
                                     rejections=self.budget.completion_retries - retries_left)
@@ -107,46 +115,15 @@ class AgentLoop:
                                   rejections=self.budget.completion_retries)
             retries_left -= 1
             self.audit.log("completion_rejected", problems=[p[:300] for p in problems])
-            history.append(Message("user",
-                "任务尚未达到完成标准，请继续执行（不得降低标准、不得删除清单条目）：\n\n"
-                + "\n\n".join(problems)))
+            history.append(Message("user", CompletionDefense.rejection_message(problems)))
 
         return self._stop("budget_turns", goal, history,
                           turns=turns, tool_calls=tool_calls,
                           rejections=self.budget.completion_retries - retries_left)
 
     # ---------- 完成防线 ----------
-
-    def _completion_defense(self, goal: str) -> list[str]:
-        problems: list[str] = []
-        feedback = SensorBank.failures_to_feedback(self.sensors.run("pre_done"))
-        if feedback:
-            problems.append(feedback)
-        unresolved = self.checklist.unresolved()
-        if unresolved:
-            lines = "\n".join(f"- [{it['status']}] {it['id']} {it['behavior']}" for it in unresolved)
-            problems.append("验收清单尚有未通过条目（逐项完成并附证据标记 pass）：\n" + lines)
-        # 计算型信号全部通过后，才动用更贵的推断型验收
-        if not problems and (self.evaluator_client or self.client):
-            accepted, issues = self._evaluate(goal)
-            if not accepted:
-                problems.append("独立验收未通过：\n" + "\n".join(f"- {i}" for i in issues))
-        return problems
-
-    def _evaluate(self, goal: str) -> tuple[bool, list[str]]:
-        """独立验收 Agent：全新上下文、只读工具、可用不同模型。"""
-        eval_registry = ToolRegistry(self.registry.ctx)
-        register_builtin(eval_registry, checklist=self.checklist, readonly=True)
-        task = (
-            f"任务目标：\n{goal}\n\n"
-            f"验收清单（实现者标记的状态与证据仅供参考，须实际核查）：\n{self.checklist.render()}\n\n"
-            f"工作区：{self.registry.ctx.workspace}"
-        )
-        output = run_subagent(
-            self.evaluator_client or self.client, "evaluator", task, eval_registry)
-        accepted, issues = parse_evaluator_output(output)
-        self.audit.log("evaluation", accepted=accepted, issues=[i[:300] for i in issues])
-        return accepted, issues
+    # 具体逻辑见 defense.py 的 CompletionDefense；这里只保留调用点，
+    # 便于 AgentLoop 与 ClaudeCodeRuntime 复用同一套验收标准。
 
     # ---------- 收尾 ----------
 
