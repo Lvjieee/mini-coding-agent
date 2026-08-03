@@ -1,6 +1,6 @@
 <div align="center">
 
-# coding-agent
+# mini-coding-agent
 
 **从 Agent Loop 写起的编码 Agent — 重点不在能跑，而在跑不好的时候怎么办**
 
@@ -65,7 +65,7 @@ Agent 改完代码，宣称"任务完成"
 ```
 
 <div align="center">
-  <img src="docs/ci-gate-demo-3.gif" alt="CI 交付网关演示：假完成被测试失败打回，修好后放行" width="92%">
+  <img src="docs/ci-gate-demo-4.gif" alt="CI 交付网关演示：假完成被测试失败打回，修好后放行" width="92%">
 </div>
 
 上图是真实运行输出（由 [`docs/render_demo.py`](docs/render_demo.py) 直接跑命令渲染）：

@@ -15,7 +15,7 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "docs", "ci-gate-demo-3.gif")
+OUT = os.path.join(ROOT, "docs", "ci-gate-demo-4.gif")
 
 FONT_PATH = "/System/Library/Fonts/Menlo.ttc"
 CJK_FONT_PATH = "/System/Library/Fonts/Hiragino Sans GB.ttc"
@@ -110,7 +110,7 @@ def render(lines: list[str]) -> None:
         for index, dot in enumerate(((255, 95, 86), (255, 189, 46), (39, 201, 63))):
             cx = PADDING + index * 20
             draw.ellipse([cx, 12, cx + 11, 23], fill=dot)
-        draw.text((WIDTH // 2 - 95, 9), "coding-agent — ci gate demo", font=mono, fill=DIM)
+        draw.text((WIDTH // 2 - 125, 9), "mini-coding-agent — ci gate demo", font=mono, fill=DIM)
         for row, line in enumerate(visible[-ROWS:]):
             y = CHROME_HEIGHT + PADDING + row * LINE_HEIGHT
             text = truncate(measure, line, max_text_width)
