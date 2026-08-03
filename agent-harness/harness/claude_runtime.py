@@ -1,7 +1,8 @@
 """Claude Code CLI runtime with an external completion defense.
 
-Claude Code owns the model/tool loop. Aegis remains responsible for the
-process boundary, retry budget, completion checks, and delivery contract.
+Claude Code owns the model/tool loop and its own harness. This runtime adds the
+scenario-level layer it does not cover: the process boundary, the retry budget,
+the completion decision, and the delivery contract.
 """
 from __future__ import annotations
 

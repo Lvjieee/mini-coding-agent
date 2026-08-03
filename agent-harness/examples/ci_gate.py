@@ -1,6 +1,6 @@
 """CI 验收网关：把 Claude Code 包在完成防线后面，只有防线通过才允许交付。
 
-Claude Code 负责改代码，Aegis 负责判定"能不能算完成"：
+Claude Code 负责改代码，本模块负责判定"能不能算完成"：
 CLI 宣称完成后先跑项目自己的检查命令（pre_done 传感器），
 不达标就带着失败输出用同一 session `--resume` 打回，直到通过或返工次数用尽。
 进程退出码给 CI 用：0 = 通过防线，1 = 拦下，不允许合入。
@@ -71,7 +71,7 @@ DEMO_FILES = {
 
 
 def build_demo_workspace() -> str:
-    workspace = tempfile.mkdtemp(prefix="aegis-ci-gate-")
+    workspace = tempfile.mkdtemp(prefix="ci-gate-demo-")
     for name, content in DEMO_FILES.items():
         with open(os.path.join(workspace, name), "w", encoding="utf-8") as handle:
             handle.write(content)
@@ -118,7 +118,7 @@ def main() -> int:
     sensors.add(CommandSensor("ci-check", check, tier="pre_done", cwd=workspace,
                               timeout=args.timeout,
                               hint="按失败输出修复实现后再宣称完成。"))
-    # checklist 留空：Claude Code 用的是它自己的工具，无法标记 Aegis 的清单条目
+    # checklist 留空：Claude Code 用的是它自己的工具，无法标记本仓库的清单条目
     defense = CompletionDefense(sensors=sensors, checklist=None, tool_ctx=ctx)
     handoff = Handoff(os.path.join(state, "HANDOFF.md"))
 
