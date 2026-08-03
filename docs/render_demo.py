@@ -15,7 +15,7 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "docs", "ci-gate-demo.gif")
+OUT = os.path.join(ROOT, "docs", "ci-gate-demo-2.gif")
 
 FONT_PATH = "/System/Library/Fonts/Menlo.ttc"
 CJK_FONT_PATH = "/System/Library/Fonts/Hiragino Sans GB.ttc"

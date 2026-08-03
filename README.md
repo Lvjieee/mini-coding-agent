@@ -53,7 +53,7 @@ Claude Code 改完代码，宣称"任务完成"
 ```
 
 <div align="center">
-  <img src="docs/ci-gate-demo.gif" alt="CI 验收网关演示：假完成被测试失败打回，修好后放行" width="92%">
+  <img src="docs/ci-gate-demo-2.gif" alt="CI 验收网关演示：假完成被测试失败打回，修好后放行" width="92%">
 </div>
 
 上图是真实运行输出（由 [`docs/render_demo.py`](docs/render_demo.py) 直接跑命令渲染）：
