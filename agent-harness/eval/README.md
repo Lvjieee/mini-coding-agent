@@ -114,8 +114,54 @@ defense 的"真完成"有 9 次，但只有 1 次是干净的 `done` 收尾—�
 - 任务集规模有限（9 个函数级任务），结论不能直接外推到大型工程任务；
 - `PASS_TO_PASS` 对纯 stub 任务检查的是 API 契约，不是完整业务回归；要更接近 SWE-bench，还需要真实仓库、原有测试集和 `FAIL_TO_PASS` / `PASS_TO_PASS` 标注；
 - 主结果的 `PASS_TO_PASS` 是对已保存的 54 个历史工作区离线补算，没有重新调用模型；
-- `defense` 的可见检查只覆盖一条基本断言，防线收益主要来自清单与独立验收；
-  若给 `baseline` 也配可见测试，差距会缩小——这正是"反馈信号本身就是 harness 的一部分"的佐证；
-- 主结果为 glm-4-flash、每臂 27 次运行；换模型/换任务难度结论会变，引用时须注明；
 - 独立验收器存在误拒（见上文"验收器偏严"），当前轮次开销偏高、有优化空间；
 - 写简历只使用真实模型跑出的数字，并注明任务集规模与所用模型。
+
+---
+
+## 附：SWE-bench Verified 兼容子集（可选）
+
+上述 9 题是自造的函数级任务，与真实工程差距明显。为了让「机制」和「玩具题目」两个批评分开，
+仓库另附一条 A/B 通路，在 SWE-bench Verified 的一个小子集（默认 5 题）上跑同一 Agent，
+配合官方 judge 打分。取向明确：**不冲绝对分数**，只证明 harness 兼容 SWE-bench 判卷协议、
+并在真实公开 benchmark 上让 `false_done` 差异重现。
+
+**为什么单独摆一节**：判卷需要 Docker + `swebench` 包 + 每实例 1–3GB 镜像 + 网络拉仓库，
+远重于上面的 9 题主评测；免费弱模型（如 glm-4-flash）在 SWE-bench 上预期
+`resolved` 接近 0，把它和主结果混在一起会掩盖主评测的信噪比。
+
+**代码位置**：
+
+- 适配器：[`swebench_adapter.py`](swebench_adapter.py) — 数据集加载/挑题/工作区/patch/官方 judge 调用
+- A/B runner：[`run_swebench_ab.py`](run_swebench_ab.py) — 装配 AgentLoop、抽 patch、合并 judge 报告
+- 单测：[`../tests/test_swebench_adapter.py`](../tests/test_swebench_adapter.py) — patch 抽取、predictions 格式、挑题启发式、report 解析
+
+**运行**：
+
+```bash
+pip install swebench datasets
+export OPENAI_BASE_URL=... OPENAI_API_KEY=... HARNESS_MODEL=glm-4-flash
+
+python eval/run_swebench_ab.py --n 3 --skip-judge          # 只跑 Agent 侧，验证链路
+python eval/run_swebench_ab.py --n 5 --runs 1              # 完整 A/B（含 Docker judge）
+python eval/run_swebench_ab.py --instances "sympy__sympy-20590,pytest-dev__pytest-11148"
+```
+
+**取舍与实现说明**：
+
+- 挑题启发式：优先单文件、短 patch、非重仓库（Django/matplotlib/scipy 等默认排除）；
+  也可用 `--instances` 精确指定。
+- 工作区：`git init` + `fetch --depth 1 <sha>` 浅拉取，只下载目标 commit 的树，避免拉全历史。
+- Patch 抽取：`git diff HEAD` + 未跟踪文件登记；抽 patch 不改 HEAD、不留额外 commit。
+- 防线信号：SWE-bench 场景下用 `pytest -x -q --tb=no` 跑仓库已有测试作 `pre_done` 传感器，
+  近似「不引入回归」；不启用 Planner 与独立 Evaluator（issue 已是明确目标；Docker 判卷才是最终裁判）。
+- 判卷：`python -m swebench.harness.run_evaluation` 由官方 harness 拉 Docker 镜像；
+  产物在 `logs/run_evaluation/<run_id>/mini-coding-agent/<instance_id>/report.json`。
+
+**评测的诚实边界**：
+
+- 免费弱模型上 `resolved` 预期接近 0——本子集不打算竞争绝对分数；
+- 单臂 5 题、样本极小，任何结论都是**趋势观测**而非统计结论；
+- SWE-bench 自身在 2026 年被审计出约 27.6% Verified 题存在测试设计缺陷（narrow / brittle tests），
+  本地跑分应结合 [OpenAI 2026-02 audit](https://openai.com/index/introducing-swe-bench-verified/) 一起看，不做绝对判据。
+

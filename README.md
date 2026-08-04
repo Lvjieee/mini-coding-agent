@@ -45,6 +45,10 @@
 
 代价是算力约 3.3×。方法、局限与自省见 [评测说明](agent-harness/eval/README.md)。
 
+另附一条与 **SWE-bench Verified** 兼容的通路（`agent-harness/eval/run_swebench_ab.py`），
+在 5 题子集上跑同一 A/B、由官方 judge 打分——用来证明 harness 兼容公开 benchmark
+的判卷协议，不追求绝对分数。运行需要 Docker 与 `swebench` 包，详见评测说明。
+
 ---
 
 ## 🔦 一个场景：挂到 CI 上当交付网关
