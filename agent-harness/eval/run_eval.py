@@ -26,6 +26,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -277,6 +278,70 @@ TASKS = [
 ]
 
 
+# ---------------------------------------------------------------- 回归裁判
+# 这些断言在 Agent 运行结束后才写入工作区。它们模拟 SWE-bench 的 PASS_TO_PASS：
+# 纯 stub 任务检查公共 API 契约；已有业务逻辑任务检查与目标无关的既有行为。
+PASS_TO_PASS = {
+    "median": (
+        "import inspect\n"
+        "from stats import median\n"
+        "assert callable(median)\n"
+        "assert list(inspect.signature(median).parameters) == ['nums']\n"
+    ),
+    "slugify": (
+        "import inspect\n"
+        "from text_utils import slugify\n"
+        "assert callable(slugify)\n"
+        "assert list(inspect.signature(slugify).parameters) == ['title']\n"
+    ),
+    "parse_csv_line": (
+        "import inspect\n"
+        "from csvmini import parse_csv_line\n"
+        "assert callable(parse_csv_line)\n"
+        "assert list(inspect.signature(parse_csv_line).parameters) == ['line']\n"
+    ),
+    "rle": (
+        "import inspect\n"
+        "from rle import encode, decode\n"
+        "assert list(inspect.signature(encode).parameters) == ['s']\n"
+        "assert list(inspect.signature(decode).parameters) == ['pairs']\n"
+    ),
+    "days_between_bugfix": (
+        "import inspect\n"
+        "from dateutil_mini import days_between\n"
+        "assert list(inspect.signature(days_between).parameters) == ['a', 'b']\n"
+        "try:\n"
+        "    days_between('not-a-date', '2024-01-01')\n"
+        "    raise SystemExit('invalid date should raise ValueError')\n"
+        "except ValueError:\n"
+        "    pass\n"
+    ),
+    "merge_intervals": (
+        "import inspect\n"
+        "from intervals import merge_intervals\n"
+        "assert callable(merge_intervals)\n"
+        "assert list(inspect.signature(merge_intervals).parameters) == ['intervals']\n"
+    ),
+    "format_size": (
+        "import inspect\n"
+        "from humanize_mini import format_size\n"
+        "assert callable(format_size)\n"
+        "assert list(inspect.signature(format_size).parameters) == ['n']\n"
+    ),
+    "cart_total": (
+        "from pricing import TAX, with_tax\n"
+        "assert TAX == 0.1\n"
+        "assert with_tax(10) == 11.0\n"
+    ),
+    "parse_duration": (
+        "import inspect\n"
+        "from timeparse import parse_duration\n"
+        "assert callable(parse_duration)\n"
+        "assert list(inspect.signature(parse_duration).parameters) == ['s']\n"
+    ),
+}
+
+
 # ---------------------------------------------------------------- mock 模型
 # 仅用于自检实验管线：先交一版有 bug 的实现并宣称完成；被防线打回后再交正确版。
 # baseline 臂会把第一版当成"完成"（false_done），defense 臂会打回并得到修复版。
@@ -364,16 +429,45 @@ def build_loop(workspace: str, arm: str, client, evaluator, task: dict) -> tuple
     return loop, checklist
 
 
-def run_hidden_test(workspace: str, task: dict) -> tuple[bool, str]:
-    """运行结束后才把隐藏测试写入工作区执行——Agent 全程不可见。"""
-    path = os.path.join(workspace, "_hidden_test.py")
+def run_judge(workspace: str, source: str, filename: str) -> tuple[bool, str]:
+    """在 Agent 结束后写入一类裁判测试并执行，裁判文件对 Agent 不可见。"""
+    path = os.path.join(workspace, filename)
     with open(path, "w", encoding="utf-8") as f:
-        f.write(task["hidden_test"])
+        f.write(source)
     proc = subprocess.run(
-        [sys.executable, "_hidden_test.py"], cwd=workspace,
+        [sys.executable, filename], cwd=workspace,
         capture_output=True, text=True, timeout=60)
     detail = (proc.stdout + proc.stderr).strip()[-300:]
     return proc.returncode == 0, detail
+
+
+def run_hidden_test(workspace: str, task: dict) -> tuple[bool, str]:
+    return run_judge(workspace, task["hidden_test"], "_hidden_test.py")
+
+
+def run_regression_test(workspace: str, task: dict) -> tuple[bool, str]:
+    return run_judge(workspace, PASS_TO_PASS[task["name"]], "_pass_to_pass.py")
+
+
+def run_regression_baseline(workspace: str, task: dict) -> tuple[bool, str]:
+    """验证回归裁判本身，不把裁判文件写进 Agent 工作区。"""
+    fd, path = tempfile.mkstemp(prefix="pass-to-pass-", suffix=".py")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(PASS_TO_PASS[task["name"]])
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(
+            item for item in (workspace, env.get("PYTHONPATH", "")) if item)
+        proc = subprocess.run(
+            [sys.executable, path], cwd=workspace, env=env,
+            capture_output=True, text=True, timeout=60)
+        detail = (proc.stdout + proc.stderr).strip()[-300:]
+        return proc.returncode == 0, detail
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 
 def run_one(root: str, task: dict, arm: str, run_idx: int, mock: bool,
@@ -383,6 +477,11 @@ def run_one(root: str, task: dict, arm: str, run_idx: int, mock: bool,
     for rel, content in task["files"].items():
         with open(os.path.join(workspace, rel), "w", encoding="utf-8") as f:
             f.write(content)
+
+    baseline_regression, baseline_detail = run_regression_baseline(workspace, task)
+    if not baseline_regression:
+        raise RuntimeError(
+            f"任务 {task['name']} 的 PASS_TO_PASS 基线未通过：{baseline_detail}")
 
     client = client_factory(task)
     loop, checklist = build_loop(workspace, arm, client, evaluator, task)
@@ -394,7 +493,9 @@ def run_one(root: str, task: dict, arm: str, run_idx: int, mock: bool,
 
     started = time.time()
     result = loop.run(task["goal"])
-    verified, detail = run_hidden_test(workspace, task)
+    hidden_pass, hidden_detail = run_hidden_test(workspace, task)
+    regression_pass, regression_detail = run_regression_test(workspace, task)
+    verified = hidden_pass and regression_pass
 
     claimed_done = result["status"] == "done"
     return {
@@ -402,13 +503,53 @@ def run_one(root: str, task: dict, arm: str, run_idx: int, mock: bool,
         "status": result["status"],
         "claimed_done": claimed_done,
         "verified_pass": verified,
+        "hidden_pass": hidden_pass,
+        "pass_to_pass": regression_pass,
         "false_done": claimed_done and not verified,
         "blocked": (not claimed_done),
         "rejections": result.get("rejections", 0),
         "turns": result.get("turns", 0),
         "tool_calls": result.get("tool_calls", 0),
         "seconds": round(time.time() - started, 1),
-        "hidden_detail": "" if verified else detail,
+        "hidden_detail": "" if hidden_pass else hidden_detail,
+        "regression_detail": "" if regression_pass else regression_detail,
+    }
+
+
+def wilson_interval(successes: int, total: int, z: float = 1.96) -> list[float]:
+    """95% Wilson 区间，避免小样本直接把 0/1 当成确定结论。"""
+    if total == 0:
+        return [0.0, 0.0]
+    p = successes / total
+    denominator = 1 + z * z / total
+    center = (p + z * z / (2 * total)) / denominator
+    margin = z * ((p * (1 - p) / total) + z * z / (4 * total * total)) ** 0.5 / denominator
+    return [round(max(0.0, center - margin), 4), round(min(1.0, center + margin), 4)]
+
+
+def reliability_metrics(rows: list[dict]) -> dict:
+    """按任务分组计算 pass@1、pass^k 和至少一次通过。"""
+    by_task: dict[str, list[dict]] = {}
+    for row in rows:
+        by_task.setdefault(row["task"], []).append(row)
+    counts = [len(items) for items in by_task.values()]
+    k = min(counts) if counts else 0
+    complete_tasks = [items for items in by_task.values() if len(items) >= k] if k else []
+    return {
+        "tasks": len(by_task),
+        "k": k,
+        "pass_at_1": sum(row.get("verified_pass", False) for row in rows),
+        "pass_at_1_total": len(rows),
+        "pass_at_1_wilson_95": wilson_interval(
+            sum(row.get("verified_pass", False) for row in rows), len(rows)),
+        "pass_power_k": sum(
+            all(row.get("verified_pass", False) for row in items[:k])
+            for items in complete_tasks),
+        "pass_power_k_total": len(complete_tasks),
+        "pass_at_least_1": sum(any(row.get("verified_pass", False) for row in items)
+                                for items in complete_tasks),
+        "false_done_wilson_95": wilson_interval(
+            sum(row.get("false_done", False) for row in rows), len(rows)),
     }
 
 
@@ -425,8 +566,10 @@ def aggregate(rows: list[dict]) -> dict:
             "verified_pass": sum(r["verified_pass"] for r in done),
             "false_done": sum(r["false_done"] for r in done),
             "blocked": sum(r["blocked"] for r in done),
+            "pass_to_pass": sum(r.get("pass_to_pass", False) for r in done),
             "avg_rejections": round(sum(r["rejections"] for r in done) / n, 2),
             "avg_turns": round(sum(r["turns"] for r in done) / n, 1),
+            "reliability": reliability_metrics(done),
         }
     return out
 
@@ -445,19 +588,29 @@ def print_report(rows: list[dict], summary: dict, mock: bool):
         else:
             flag = "未通过"
         print(f"  {r['task']:<22} {r['arm']:<9} run{r['run']}  "
-              f"status={r['status']:<28} 隐藏测试={'过' if r['verified_pass'] else '挂'}  "
-              f"返工={r['rejections']}  [{flag}]")
+              f"status={r['status']:<28} 隐藏测试={'过' if r.get('hidden_pass') else '挂'}  "
+              f"回归={'过' if r.get('pass_to_pass') else '挂'}  返工={r['rejections']}  [{flag}]")
 
     print("\n===== 汇总 =====")
     header = f"{'指标':<26}{'baseline(关防线)':<20}{'defense(开防线)':<20}"
     print(header)
     keys = [("runs", "运行次数"), ("errors", "运行出错(未计入)"),
             ("claimed_done", "宣称完成"),
-            ("verified_pass", "隐藏测试通过(真完成)"), ("false_done", "烂尾进入交付"),
-            ("blocked", "防线拦截/未交付"), ("avg_rejections", "平均返工次数"),
-            ("avg_turns", "平均轮次")]
+            ("verified_pass", "隐藏+回归通过(真完成)"), ("false_done", "烂尾进入交付"),
+            ("blocked", "防线拦截/未交付"), ("pass_to_pass", "回归测试通过"),
+            ("avg_rejections", "平均返工次数"), ("avg_turns", "平均轮次")]
     for key, label in keys:
         print(f"{label:<26}{str(summary['baseline'][key]):<20}{str(summary['defense'][key]):<20}")
+    print("\n===== 可靠性指标 =====")
+    for arm in ("baseline", "defense"):
+        metrics = summary[arm]["reliability"]
+        lo, hi = metrics["pass_at_1_wilson_95"]
+        flo, fhi = metrics["false_done_wilson_95"]
+        print(f"  {arm:<9} pass@1={metrics['pass_at_1']}/{metrics['pass_at_1_total']} "
+              f"95%CI=[{lo:.1%}, {hi:.1%}]  pass^{metrics['k']}="
+              f"{metrics['pass_power_k']}/{metrics['pass_power_k_total']} "
+              f"至少一次={metrics['pass_at_least_1']}/{metrics['pass_power_k_total']} "
+              f"false_done CI=[{flo:.1%}, {fhi:.1%}]")
     if mock:
         print("\n[注意] 本次为 --mock 管线自检，模型行为是脚本化的，数字只证明机制有效，不可用于简历。")
 
