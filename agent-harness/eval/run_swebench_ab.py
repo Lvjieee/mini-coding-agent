@@ -1,22 +1,32 @@
-"""SWE-bench Verified × A/B 评测 runner。
+"""SWE-bench × A/B 评测 runner。
 
-在 SWE-bench Verified 的一个小子集（默认 5 题）上跑同一 Agent，
-只切换「完成防线」开关，观测 baseline/defense 两臂在 `resolved` 与 `false_done` 上的差异。
+在 SWE-bench 的一个小子集（默认 5 题）上跑同一 Agent，只切换「完成防线」开关，
+观测 baseline/defense 两臂在 `resolved` 与 `false_done` 上的差异。
 
 明确取向：**不冲绝对分数**。免费弱模型（如智谱 glm-4-flash）在 SWE-bench 上
 预计 resolved 接近 0；本 runner 的价值是证明 harness 兼容 SWE-bench 判卷协议，
 并让 baseline 的假完成流出与 defense 拦截的差距在真实公开 benchmark 上重现。
 
+两条打分路线：
+- `--judge sbcli`（默认）：官方云端评测，**不需要 Docker**，需一次性邮箱验证拿免费 API key
+- `--judge local`：本地 `swebench.harness`，需要 Docker；Apple Silicon 上官方标注实验性
+
+**配额是硬约束**：`swe-bench_verified/test` 每账号只有 1 次提交额度，而 A/B 要两次
+（baseline + defense）。所以默认数据集用 `SWE-bench_Lite`（对应 lite/dev，额度约 976 次），
+把 verified 的唯一额度留给最终确认。`sb-cli get-quotas` 可查余量。
+
 准备：
-    pip install swebench datasets
+    python3 -m pip install --user swebench datasets sb-cli
+    sb-cli gen-api-key your@email.com
+    export SWEBENCH_API_KEY=...
+    sb-cli verify-api-key <邮件里的验证码>
     export OPENAI_BASE_URL=... OPENAI_API_KEY=... HARNESS_MODEL=glm-4-flash
 
-只准备工作区、抽 patch，不调 Docker judge（用来在没有模型或磁盘不够时先跑通链路）：
-    python eval/run_swebench_ab.py --n 3 --skip-judge
-
-真跑完整链路（含 Docker 打分）：
-    python eval/run_swebench_ab.py --n 5 --runs 1
-    python eval/run_swebench_ab.py --instances "django__django-11039,sympy__sympy-20590"
+用法：
+    python eval/run_swebench_ab.py --n 3 --skip-judge          # 只跑 Agent 侧，验证链路
+    python eval/run_swebench_ab.py --n 5 --runs 1              # 完整 A/B（云端打分）
+    python eval/run_swebench_ab.py --n 5 --judge local         # 本地 Docker 打分
+    python eval/run_swebench_ab.py --instances "sympy__sympy-20590"
 """
 from __future__ import annotations
 
@@ -121,11 +131,27 @@ def run_one(instance: dict, arm: str, run_idx: int, model_client, root: str) -> 
     }
 
 
-def evaluate_arm(rows: list[dict], out_dir: str, arm: str, dataset_name: str) -> dict:
-    """把一个臂的 predictions 写文件，调官方 judge 打分，返回 {instance_id: judge}。"""
+def evaluate_arm(rows: list[dict], out_dir: str, arm: str, dataset_name: str,
+                 judge: str) -> dict:
+    """把一个臂的 predictions 写文件、调 judge 打分，返回 {instance_id: judge}。
+
+    judge="local" 走本地 Docker；judge="sbcli" 走官方云端评测（无需 Docker）。
+    """
+    run_id = f"mini-coding-agent-{arm}-{os.path.basename(out_dir)}"
+    if judge == "sbcli":
+        subset, split = swe.SBCLI_SUBSETS.get(
+            dataset_name, ("swe-bench_lite", "dev"))
+        predictions_path = os.path.join(out_dir, f"predictions-{arm}.json")
+        swe.write_predictions_json(rows, predictions_path, AGENT_MODEL_NAME)
+        reports_dir = swe.run_evaluation_sbcli(
+            predictions_path, subset, split, run_id,
+            output_dir=os.path.join(out_dir, "sb-cli-reports"))
+        return swe.parse_sbcli_report(
+            reports_dir, subset, split, run_id,
+            instance_ids=[r["instance_id"] for r in rows])
+
     predictions_path = os.path.join(out_dir, f"predictions-{arm}.jsonl")
     swe.write_predictions(rows, predictions_path, AGENT_MODEL_NAME)
-    run_id = f"mini-coding-agent-{arm}-{os.path.basename(out_dir)}"
     logs_dir = swe.run_evaluation(predictions_path, dataset_name, run_id)
     return swe.parse_reports(logs_dir, AGENT_MODEL_NAME)
 
@@ -172,10 +198,13 @@ def main():
     parser.add_argument("--instances", type=str, default="",
                         help="逗号分隔的 instance_id；给了就精确加载，忽略 --n")
     parser.add_argument("--runs", type=int, default=1, help="每题每臂重复次数")
-    parser.add_argument("--dataset", type=str, default=swe.DEFAULT_DATASET)
+    parser.add_argument("--dataset", type=str, default="princeton-nlp/SWE-bench_Lite",
+                        help="HF 数据集名。A/B 默认用 Lite：verified/test 的 sb-cli 额度只有 1 次")
     parser.add_argument("--arms", type=str, default="baseline,defense")
+    parser.add_argument("--judge", choices=("local", "sbcli"), default="sbcli",
+                        help="local=本地 Docker；sbcli=官方云端评测（无需 Docker，需 API key）")
     parser.add_argument("--skip-judge", action="store_true",
-                        help="只跑 Agent 侧、抽 patch，不调用 Docker judge（连通性自检）")
+                        help="只跑 Agent 侧、抽 patch，不调用任何 judge（连通性自检）")
     args = parser.parse_args()
 
     if not os.environ.get("OPENAI_API_KEY"):
@@ -230,7 +259,7 @@ def main():
     else:
         merged = []
         for arm, rows in rows_by_arm.items():
-            reports = evaluate_arm(rows, root, arm, args.dataset)
+            reports = evaluate_arm(rows, root, arm, args.dataset, args.judge)
             merged.extend(merge_reports(rows, reports))
 
     summary = summarize([r for r in merged if r.get("status") != "error"])
@@ -238,6 +267,7 @@ def main():
     with open(results_path, "w", encoding="utf-8") as f:
         json.dump({"rows": merged, "summary": summary,
                    "dataset": args.dataset, "model": model,
+                   "judge": None if args.skip_judge else args.judge,
                    "skip_judge": args.skip_judge},
                   f, ensure_ascii=False, indent=1)
 
@@ -252,7 +282,7 @@ def main():
         d = summary.get("defense", {}).get(key, "-")
         print(f"{label:<22}{str(b):<15}{str(d):<15}")
     if args.skip_judge:
-        print("\n[skip-judge] 未调用 Docker judge，resolved/false_done 为 null；"
+        print("\n[skip-judge] 未调用 judge，resolved/false_done 为 null；"
               "复跑去掉 --skip-judge 即可打分。")
     print(f"\n结果：{results_path}")
 

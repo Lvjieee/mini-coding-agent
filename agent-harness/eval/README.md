@@ -119,32 +119,65 @@ defense 的"真完成"有 9 次，但只有 1 次是干净的 `done` 收尾—�
 
 ---
 
-## 附：SWE-bench Verified 兼容子集（可选）
+## 附：SWE-bench 兼容子集（可选）
 
 上述 9 题是自造的函数级任务，与真实工程差距明显。为了让「机制」和「玩具题目」两个批评分开，
-仓库另附一条 A/B 通路，在 SWE-bench Verified 的一个小子集（默认 5 题）上跑同一 Agent，
+仓库另附一条 A/B 通路，在 SWE-bench 的一个小子集（默认 5 题）上跑同一 Agent，
 配合官方 judge 打分。取向明确：**不冲绝对分数**，只证明 harness 兼容 SWE-bench 判卷协议、
 并在真实公开 benchmark 上让 `false_done` 差异重现。
 
-**为什么单独摆一节**：判卷需要 Docker + `swebench` 包 + 每实例 1–3GB 镜像 + 网络拉仓库，
+**为什么单独摆一节**：判卷需要外部资源（云端配额或本地 Docker + 每实例 1–3GB 镜像），
 远重于上面的 9 题主评测；免费弱模型（如 glm-4-flash）在 SWE-bench 上预期
 `resolved` 接近 0，把它和主结果混在一起会掩盖主评测的信噪比。
 
 **代码位置**：
 
-- 适配器：[`swebench_adapter.py`](swebench_adapter.py) — 数据集加载/挑题/工作区/patch/官方 judge 调用
+- 适配器：[`swebench_adapter.py`](swebench_adapter.py) — 数据集加载/挑题/工作区/patch/两种 judge 后端
 - A/B runner：[`run_swebench_ab.py`](run_swebench_ab.py) — 装配 AgentLoop、抽 patch、合并 judge 报告
-- 单测：[`../tests/test_swebench_adapter.py`](../tests/test_swebench_adapter.py) — patch 抽取、predictions 格式、挑题启发式、report 解析
+- 单测：[`../tests/test_swebench_adapter.py`](../tests/test_swebench_adapter.py) — patch 抽取、两种 predictions 格式、挑题启发式、两种 report 解析
 
-**运行**：
+### 两条打分路线
+
+| 路线 | 依赖 | 适用 |
+| --- | --- | --- |
+| `--judge sbcli`（默认） | 免费 API key（邮箱验证），**无需 Docker** | 大多数情况，尤其 Apple Silicon |
+| `--judge local` | Docker + `swebench` 包 + 数十 GB 磁盘 | 有 x86 机器且想完全离线 |
+
+官方对本地 Docker 评测的建议配置是 x86_64、≥120GB 磁盘、≥16GB 内存；
+ARM（Apple Silicon）标注为实验性，需要本地构建镜像（`--namespace ''`），耗时明显更长。
+因此默认走云端。
+
+### 配额是硬约束
+
+`sb-cli get-quotas` 的额度大致是：
+
+- `swe-bench_verified` / `test`：**1 次**
+- `swe-bench_lite` / `dev`：约 976 次
+- `swe-bench-m` / `dev`：约 997 次
+
+A/B 需要两次提交（baseline + defense），所以**默认数据集用 `SWE-bench_Lite`**（映射到 lite/dev），
+把 verified/test 的唯一额度留到最后确认时再用。
+
+### 运行
+
+一次性准备（注意用 `python3 -m pip`，系统上没有裸 `pip` 命令）：
 
 ```bash
-pip install swebench datasets
+python3 -m pip install --user swebench datasets sb-cli
+sb-cli gen-api-key your@email.com
+export SWEBENCH_API_KEY=你收到的key
+sb-cli verify-api-key 邮件里的验证码
+sb-cli get-quotas
+```
+
+跑评测：
+
+```bash
 export OPENAI_BASE_URL=... OPENAI_API_KEY=... HARNESS_MODEL=glm-4-flash
 
-python eval/run_swebench_ab.py --n 3 --skip-judge          # 只跑 Agent 侧，验证链路
-python eval/run_swebench_ab.py --n 5 --runs 1              # 完整 A/B（含 Docker judge）
-python eval/run_swebench_ab.py --instances "sympy__sympy-20590,pytest-dev__pytest-11148"
+python eval/run_swebench_ab.py --n 3 --skip-judge      # 只跑 Agent 侧，验证链路，免费
+python eval/run_swebench_ab.py --n 5 --runs 1          # 完整 A/B，云端打分
+python eval/run_swebench_ab.py --n 5 --judge local     # 本地 Docker 打分（需自行装 Docker）
 ```
 
 **取舍与实现说明**：
@@ -153,15 +186,14 @@ python eval/run_swebench_ab.py --instances "sympy__sympy-20590,pytest-dev__pytes
   也可用 `--instances` 精确指定。
 - 工作区：`git init` + `fetch --depth 1 <sha>` 浅拉取，只下载目标 commit 的树，避免拉全历史。
 - Patch 抽取：`git diff HEAD` + 未跟踪文件登记；抽 patch 不改 HEAD、不留额外 commit。
+- Predictions 格式两种：本地 harness 要 JSONL，sb-cli 要以 instance_id 为 key 的 JSON。
 - 防线信号：SWE-bench 场景下用 `pytest -x -q --tb=no` 跑仓库已有测试作 `pre_done` 传感器，
-  近似「不引入回归」；不启用 Planner 与独立 Evaluator（issue 已是明确目标；Docker 判卷才是最终裁判）。
-- 判卷：`python -m swebench.harness.run_evaluation` 由官方 harness 拉 Docker 镜像；
-  产物在 `logs/run_evaluation/<run_id>/mini-coding-agent/<instance_id>/report.json`。
+  近似「不引入回归」；不启用 Planner 与独立 Evaluator（issue 已是明确目标；judge 才是最终裁判）。
 
 **评测的诚实边界**：
 
 - 免费弱模型上 `resolved` 预期接近 0——本子集不打算竞争绝对分数；
 - 单臂 5 题、样本极小，任何结论都是**趋势观测**而非统计结论；
+- 云端报告只给 id 级别的 resolved/unresolved/error，不含逐测试明细（本地 judge 才有）；
 - SWE-bench 自身在 2026 年被审计出约 27.6% Verified 题存在测试设计缺陷（narrow / brittle tests），
   本地跑分应结合 [OpenAI 2026-02 audit](https://openai.com/index/introducing-swe-bench-verified/) 一起看，不做绝对判据。
-

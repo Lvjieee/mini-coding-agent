@@ -1,21 +1,25 @@
-"""SWE-bench Verified 适配器（无 Docker 硬依赖，按需调用官方 judge）。
+"""SWE-bench 适配器：支持本地 Docker judge 与 sb-cli 云端 judge 两种打分后端。
 
 设计要点：
 - 数据集加载走 HuggingFace `datasets`，仅在真正需要时导入；
 - 工作区用 `git init` + 浅拉取，避免 clone 整个仓库；
 - Agent 执行结束后 `git diff HEAD` 抽 unified diff 作为 predictions；
-- 打分调用官方 `python -m swebench.harness.run_evaluation`，Docker 由 judge 内部拉起；
-- 我们只关心 `resolved` 布尔值和每个测试的 pass/fail 明细，不复现 judge 内部流程。
+- 打分有两条路：
+  * `local`：`python -m swebench.harness.run_evaluation`，需要 Docker；
+    Apple Silicon 上官方标注为实验性，需本地构建镜像（慢）。
+  * `sbcli`：官方 `sb-cli` 云端评测（AWS），**不需要 Docker**，需邮箱验证的免费 API key。
+- 我们只关心 `resolved` 布尔值和测试明细，不复现 judge 内部流程。
 
-Judge 侧真实执行需要：
-    pip install swebench datasets
-    Docker 已安装并可用（每实例镜像约 1-3GB）
+**配额是硬约束**：`swe-bench_verified/test` 每账号只有 **1 次** 提交额度，
+而 A/B 需要两次提交（baseline + defense）。所以 A/B 默认走 `swe-bench_lite/dev`
+（额度约 976 次），把 verified/test 的唯一额度留给最终确认。用 `sb-cli get-quotas` 查看余量。
 
-本适配器本身不依赖 swebench/datasets 包——仅在调用相应函数时按需导入，
-方便单测和 dry-run 校验代码结构而不装大依赖。
+本适配器本身不依赖 swebench/datasets/sb-cli 包——仅在调用相应函数时按需导入，
+方便单测和结构校验而不装大依赖。
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 import re
@@ -28,11 +32,19 @@ import sys
 
 DEFAULT_DATASET = "princeton-nlp/SWE-bench_Verified"
 
+# HF 数据集名 -> sb-cli 的 (subset, split)。A/B 建议用 lite/dev，额度充足。
+SBCLI_SUBSETS = {
+    "princeton-nlp/SWE-bench_Verified": ("swe-bench_verified", "test"),
+    "princeton-nlp/SWE-bench_Lite": ("swe-bench_lite", "dev"),
+    "princeton-nlp/SWE-bench": ("swe-bench_lite", "dev"),
+}
+
 # 依赖较重、镜像较大或跨模块修改多的仓库，默认排除以控制免费预算下的迭代时间。
 HEAVY_REPOS = {
     "django/django", "matplotlib/matplotlib", "scikit-learn/scikit-learn",
     "numpy/numpy", "pandas-dev/pandas", "sphinx-doc/sphinx", "astropy/astropy",
 }
+
 
 
 def files_changed(patch: str) -> list[str]:
@@ -126,7 +138,7 @@ def extract_patch(workspace: str) -> str:
     return proc.stdout
 
 
-# ---------------------------------------------------------------- 官方 judge
+# ---------------------------------------------------------------- 官方 judge（本地 Docker）
 
 def write_predictions(rows: list[dict], path: str, model_name: str) -> None:
     """按 swebench.harness 需要的 JSONL 格式写 predictions（一行一条）。
@@ -195,5 +207,97 @@ def parse_reports(logs_dir: str, model_name: str) -> dict[str, dict]:
             "patch_applied": bool(entry.get("patch_successfully_applied", False)),
             "fail_to_pass": tests_status.get("FAIL_TO_PASS", {}),
             "pass_to_pass": tests_status.get("PASS_TO_PASS", {}),
+        }
+    return out
+
+
+# ---------------------------------------------------------------- sb-cli 云端 judge
+
+def write_predictions_json(rows: list[dict], path: str, model_name: str) -> None:
+    """sb-cli 要的是 JSON（不是 JSONL）。用 instance_id 作 key 的字典格式。"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    payload = {
+        row["instance_id"]: {
+            "model_patch": row["patch"],
+            "model_name_or_path": model_name,
+        }
+        for row in rows if row.get("patch")
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=1)
+
+
+def run_evaluation_sbcli(
+    predictions_path: str,
+    subset: str,
+    split: str,
+    run_id: str,
+    output_dir: str,
+) -> str:
+    """提交到 sb-cli 云端评测并等待结果。返回报告所在目录。
+
+    需要先完成一次性认证：
+        python3 -m pip install --user sb-cli
+        sb-cli gen-api-key your@email.com
+        export SWEBENCH_API_KEY=...
+        sb-cli verify-api-key <邮件里的验证码>
+
+    注意配额：`swe-bench_verified/test` 每账号仅 1 次，A/B 请用 `swe-bench_lite/dev`。
+    """
+    if not os.environ.get("SWEBENCH_API_KEY"):
+        raise RuntimeError(
+            "缺少 SWEBENCH_API_KEY。先跑 `sb-cli gen-api-key <邮箱>` 并 "
+            "`sb-cli verify-api-key <验证码>`，再 export SWEBENCH_API_KEY=...")
+    os.makedirs(output_dir, exist_ok=True)
+    cmd = [
+        "sb-cli", "submit", subset, split,
+        "--predictions_path", predictions_path,
+        "--run_id", run_id,
+        "--output_dir", output_dir,
+        "--gen_report", "1",
+        "--wait_for_evaluation", "1",
+    ]
+    subprocess.run(cmd, check=True)
+    return output_dir
+
+
+def parse_sbcli_report(
+    output_dir: str,
+    subset: str,
+    split: str,
+    run_id: str,
+    instance_ids: list[str] | None = None,
+) -> dict[str, dict]:
+    """解析 sb-cli 的 `{subset}__{split}__{run_id}.json` 报告。
+
+    报告用 id 列表（resolved_ids / unresolved_ids / error_ids）表达结果，
+    这里展平成 {instance_id: {...}}，与本地 judge 的返回结构对齐。
+    """
+    pattern = os.path.join(output_dir, f"{subset}__{split}__{run_id}.json")
+    matches = sorted(glob.glob(pattern)) or sorted(
+        glob.glob(os.path.join(output_dir, f"*{run_id}*.json")))
+    report_path = next((p for p in matches if not p.endswith(".response.json")), None)
+    if not report_path:
+        return {}
+    try:
+        with open(report_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    resolved = set(data.get("resolved_ids") or [])
+    unresolved = set(data.get("unresolved_ids") or [])
+    errored = set(data.get("error_ids") or [])
+    submitted = set(data.get("submitted_ids") or []) | resolved | unresolved | errored
+    known = set(instance_ids or []) | submitted
+
+    out: dict[str, dict] = {}
+    for instance_id in sorted(known):
+        out[instance_id] = {
+            "resolved": instance_id in resolved,
+            # 云端报告不细分 patch 是否 apply 成功；进 error 列表即视为未应用
+            "patch_applied": instance_id not in errored,
+            "fail_to_pass": {},
+            "pass_to_pass": {},
         }
     return out

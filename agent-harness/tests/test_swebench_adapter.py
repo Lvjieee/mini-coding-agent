@@ -105,6 +105,20 @@ class WritePredictionsTests(unittest.TestCase):
         self.assertEqual(lines[0]["model_name_or_path"], "mini-coding-agent")
         self.assertEqual(lines[0]["model_patch"], "diff --git a/x.py b/x.py\n")
 
+    def test_sbcli_format_is_keyed_json_not_jsonl(self):
+        rows = [
+            {"instance_id": "a-1", "patch": "diff --git a/x.py b/x.py\n"},
+            {"instance_id": "a-2", "patch": ""},  # 应被过滤
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "preds.json")
+            swe.write_predictions_json(rows, path, model_name="mini-coding-agent")
+            with open(path) as f:
+                payload = json.load(f)
+        self.assertEqual(list(payload), ["a-1"])
+        self.assertEqual(payload["a-1"]["model_name_or_path"], "mini-coding-agent")
+        self.assertEqual(payload["a-1"]["model_patch"], "diff --git a/x.py b/x.py\n")
+
 
 class ParseReportsTests(unittest.TestCase):
     def test_reads_resolved_and_test_status(self):
@@ -131,6 +145,40 @@ class ParseReportsTests(unittest.TestCase):
             self.assertTrue(reports["sympy__sympy-1"]["resolved"])
             self.assertTrue(reports["sympy__sympy-1"]["patch_applied"])
             self.assertNotIn("broken", reports)
+
+
+class ParseSbcliReportTests(unittest.TestCase):
+    def test_flattens_id_lists_into_per_instance_dict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            name = "swe-bench_lite__dev__my-run.json"
+            with open(os.path.join(directory, name), "w") as f:
+                json.dump({
+                    "resolved_ids": ["a-1"],
+                    "unresolved_ids": ["a-2"],
+                    "error_ids": ["a-3"],
+                    "submitted_ids": ["a-1", "a-2", "a-3"],
+                }, f)
+            reports = swe.parse_sbcli_report(
+                directory, "swe-bench_lite", "dev", "my-run")
+
+        self.assertTrue(reports["a-1"]["resolved"])
+        self.assertFalse(reports["a-2"]["resolved"])
+        self.assertTrue(reports["a-2"]["patch_applied"])
+        self.assertFalse(reports["a-3"]["patch_applied"])
+
+    def test_missing_report_returns_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                swe.parse_sbcli_report(directory, "swe-bench_lite", "dev", "nope"),
+                {})
+
+
+class SbcliSubsetMapTests(unittest.TestCase):
+    def test_verified_maps_to_test_split_and_lite_to_dev(self):
+        self.assertEqual(swe.SBCLI_SUBSETS["princeton-nlp/SWE-bench_Verified"],
+                         ("swe-bench_verified", "test"))
+        self.assertEqual(swe.SBCLI_SUBSETS["princeton-nlp/SWE-bench_Lite"],
+                         ("swe-bench_lite", "dev"))
 
 
 if __name__ == "__main__":
