@@ -87,6 +87,25 @@ class OpenAICompatClient:
         except Exception:
             return ""
 
+    def _extract_message(self, data: dict) -> dict:
+        """取出 choices[0].message，缺失时把响应体原文带进报错。
+
+        有些网关对错误请求（路径写错、模型名不存在、额度用尽）返回 HTTP 200 +
+        错误体，此时直接索引 `choices` 会抛 `KeyError: 'choices'`，
+        把服务端真正说的话整个吞掉——批量评测会看到 N 次同样的无信息报错。
+        """
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if not choices:
+            body = json.dumps(data, ensure_ascii=False)[:800]
+            raise RuntimeError(
+                f"响应缺少 choices（base_url={self.base_url} model={self.model}）；"
+                f"服务端返回：{body}")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if not isinstance(message, dict):
+            body = json.dumps(choices[0], ensure_ascii=False)[:800]
+            raise RuntimeError(f"响应 choices[0] 缺少 message；服务端返回：{body}")
+        return message
+
     def complete(self, messages: list[Message], tools: list[dict]) -> Message:
         payload: dict = {
             "model": self.model,
@@ -119,7 +138,7 @@ class OpenAICompatClient:
                 time.sleep(2 ** attempt)
         else:  # pragma: no cover
             raise last_err  # type: ignore[misc]
-        raw = data["choices"][0]["message"]
+        raw = self._extract_message(data)
         calls: list[ToolCall] = []
         for tc in raw.get("tool_calls") or []:
             try:
@@ -157,6 +176,12 @@ class OpenAICompatClient:
                 with urllib.request.urlopen(self._build_request(payload), timeout=600) as resp:
                     for chunk in iter_sse_payloads(resp):
                         assembler.feed(chunk, on_text=on_text)
+                if not assembler.received_any:
+                    # 一个分片都没有：网关很可能返回了 200 + 错误体或空流，
+                    # 静默返回空消息会让上层误判为「模型什么都没说」
+                    raise RuntimeError(
+                        f"流式响应为空（base_url={self.base_url} model={self.model}）；"
+                        "检查 base_url 路径、模型名与额度。")
                 return assembler.message()
             except urllib.error.HTTPError as e:
                 body = self._http_error_detail(e)
