@@ -45,6 +45,11 @@
 
 代价是算力约 3.3×。方法、局限与自省见 [评测说明](agent-harness/eval/README.md)。
 
+评测按**消融阶梯**设计三臂——`baseline`（什么都不加）、`sensors`（只加确定性检查）、
+`defense`（检查 + 验收清单 + 独立验收），用来回答「是不是只要跑一遍测试就够了」。
+上表是 baseline 与 defense 的结果；中间臂是后加的，尚未用真实模型跑过，
+因此两层各自的独立贡献目前还没有数据。
+
 另附一条与 **SWE-bench** 兼容的通路（`agent-harness/eval/run_swebench_ab.py`），
 在 5 题子集上跑同一 A/B、由官方 judge 打分——用来证明 harness 兼容公开 benchmark
 的判卷协议，不追求绝对分数。默认走官方 `sb-cli` 云端评测（无需本地 Docker），

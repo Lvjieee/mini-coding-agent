@@ -26,6 +26,7 @@ class CompletionDefense:
         client=None,
         evaluator_client=None,
         audit=None,
+        use_evaluator: bool = True,
     ):
         self.sensors = sensors
         self.checklist = checklist
@@ -33,6 +34,8 @@ class CompletionDefense:
         self.client = client
         self.evaluator_client = evaluator_client
         self.audit = audit if audit is not None else getattr(tool_ctx, "audit", None)
+        # 关掉后只保留计算型信号——用于消融实验，隔离出「传感器」这一层的独立贡献
+        self.use_evaluator = use_evaluator
 
     # ---------- 对外入口 ----------
 
@@ -51,7 +54,7 @@ class CompletionDefense:
             problems.append("验收清单尚有未通过条目（逐项完成并附证据标记 pass）：\n" + lines)
 
         # 计算型信号全部通过后，才动用更贵的推断型验收
-        if not problems and (self.evaluator_client or self.client):
+        if not problems and self.use_evaluator and (self.evaluator_client or self.client):
             accepted, issues = self.evaluate(goal)
             if not accepted:
                 problems.append("独立验收未通过：\n" + "\n".join(f"- {i}" for i in issues))

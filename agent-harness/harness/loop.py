@@ -42,6 +42,7 @@ class AgentLoop:
         evaluator_client: ModelClient | None = None,
         budget: Budget | None = None,
         enable_defense: bool = True,  # 关闭 = 无条件接受模型的完成宣称（用于对照实验）
+        use_evaluator: bool = True,  # 关闭 = 只保留计算型信号（用于消融实验）
         on_text=None,  # 传入回调则改走流式，边生成边输出
     ):
         self.client = client
@@ -65,6 +66,7 @@ class AgentLoop:
             client=client,
             evaluator_client=evaluator_client,
             audit=self.audit,
+            use_evaluator=use_evaluator,
         )
 
     # ---------- 入口 ----------

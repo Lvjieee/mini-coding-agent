@@ -393,9 +393,28 @@ class MockEvaluator:
         return Message("assistant", content='{"verdict": "accept", "issues": []}')
 
 
+# ---------------------------------------------------------------- 实验臂
+# 三臂消融：把「完成防线」拆成两层，隔离各层的独立贡献。
+# 没有中间臂的话，无法回答「是不是只要跑一遍测试就够了，清单和独立验收是多余的」。
+ARMS = {
+    # 朴素循环：模型一停止调用工具就视为完成
+    "baseline": {"defense": False, "sensor": False, "checklist": False, "evaluator": False},
+    # 只加确定性检查：pre_done 传感器跑可见测试，不含清单与独立验收
+    "sensors": {"defense": True, "sensor": True, "checklist": False, "evaluator": False},
+    # 完整防线：传感器 + 行为级清单 + 独立 Evaluator + 打回重注入
+    "defense": {"defense": True, "sensor": True, "checklist": True, "evaluator": True},
+}
+ARM_LABELS = {
+    "baseline": "baseline(朴素)",
+    "sensors": "sensors(仅检查)",
+    "defense": "defense(完整)",
+}
+
+
 # ---------------------------------------------------------------- 实验执行
 
 def build_loop(workspace: str, arm: str, client, evaluator, task: dict) -> tuple[AgentLoop, Checklist]:
+    config = ARMS[arm]
     state = os.path.join(workspace, ".harness")
     ctx = ToolContext(
         policy=Policy(workspace_root=workspace),
@@ -404,13 +423,14 @@ def build_loop(workspace: str, arm: str, client, evaluator, task: dict) -> tuple
         guard=FileGuard(),
         workspace=workspace,
     )
-    defense = arm == "defense"
     checklist = Checklist(os.path.join(state, "checklist.json"))
     handoff = Handoff(os.path.join(state, "HANDOFF.md"))
     registry = ToolRegistry(ctx)
-    register_builtin(registry, checklist=checklist if defense else None, handoff=handoff)
+    # 清单工具只在需要清单的臂里注册；其余臂拿不到这组工具，清单恒为空、该关自然是 no-op
+    register_builtin(registry, checklist=checklist if config["checklist"] else None,
+                     handoff=handoff)
     sensors = SensorBank()
-    if defense and task.get("visible_check"):
+    if config["sensor"] and task.get("visible_check"):
         sensors.add(CommandSensor(
             "visible-check", task["visible_check"], tier="pre_done",
             cwd=workspace, timeout=60,
@@ -422,9 +442,11 @@ def build_loop(workspace: str, arm: str, client, evaluator, task: dict) -> tuple
         sensors=sensors,
         checklist=checklist,
         handoff=handoff,
-        evaluator_client=evaluator if defense else None,
+        evaluator_client=evaluator if config["evaluator"] else None,
         budget=Budget(max_turns=25, max_tool_calls=80, completion_retries=3),
-        enable_defense=defense,
+        enable_defense=config["defense"],
+        # client 总是传给防线，所以必须显式关掉验收器，否则 sensors 臂会误用主模型验收
+        use_evaluator=config["evaluator"],
     )
     return loop, checklist
 
@@ -486,7 +508,8 @@ def run_one(root: str, task: dict, arm: str, run_idx: int, mock: bool,
     client = client_factory(task)
     loop, checklist = build_loop(workspace, arm, client, evaluator, task)
 
-    if arm == "defense" and not mock:
+    # 清单只在需要它的臂里生成——否则 sensors 臂会多出一次 planner 调用，破坏对照
+    if ARMS[arm]["checklist"] and not mock:
         plan = run_subagent(client, "planner", f"工作区：{workspace}\n目标：{task['goal']}")
         behaviors = parse_planner_output(plan) or [f"目标「{task['goal'][:60]}」已实现且有可核查证据。"]
         checklist.bulk_add(behaviors)
@@ -553,9 +576,9 @@ def reliability_metrics(rows: list[dict]) -> dict:
     }
 
 
-def aggregate(rows: list[dict]) -> dict:
+def aggregate(rows: list[dict], arms: list[str] | None = None) -> dict:
     out = {}
-    for arm in ("baseline", "defense"):
+    for arm in (arms or list(ARMS)):
         sub = [r for r in rows if r["arm"] == arm]
         done = [r for r in sub if r.get("status") != "error"]  # 平均值只统计成功完成的运行
         n = len(done) or 1
@@ -592,17 +615,18 @@ def print_report(rows: list[dict], summary: dict, mock: bool):
               f"回归={'过' if r.get('pass_to_pass') else '挂'}  返工={r['rejections']}  [{flag}]")
 
     print("\n===== 汇总 =====")
-    header = f"{'指标':<26}{'baseline(关防线)':<20}{'defense(开防线)':<20}"
-    print(header)
+    arms = [arm for arm in ARMS if arm in summary]
+    print(f"{'指标':<26}" + "".join(f"{ARM_LABELS[a]:<20}" for a in arms))
     keys = [("runs", "运行次数"), ("errors", "运行出错(未计入)"),
             ("claimed_done", "宣称完成"),
             ("verified_pass", "隐藏+回归通过(真完成)"), ("false_done", "烂尾进入交付"),
             ("blocked", "防线拦截/未交付"), ("pass_to_pass", "回归测试通过"),
             ("avg_rejections", "平均返工次数"), ("avg_turns", "平均轮次")]
     for key, label in keys:
-        print(f"{label:<26}{str(summary['baseline'][key]):<20}{str(summary['defense'][key]):<20}")
+        print(f"{label:<26}" + "".join(f"{str(summary[a][key]):<20}" for a in arms))
+
     print("\n===== 可靠性指标 =====")
-    for arm in ("baseline", "defense"):
+    for arm in arms:
         metrics = summary[arm]["reliability"]
         lo, hi = metrics["pass_at_1_wilson_95"]
         flo, fhi = metrics["false_done_wilson_95"]
@@ -620,7 +644,15 @@ def main():
     parser.add_argument("--runs", type=int, default=1, help="每个任务每个臂重复次数")
     parser.add_argument("--tasks", type=str, default="", help="逗号分隔的任务名子集")
     parser.add_argument("--mock", action="store_true", help="脚本化模型自检管线（不调真实模型）")
+    parser.add_argument("--arms", type=str, default=",".join(ARMS),
+                        help="逗号分隔的实验臂子集，默认三臂消融：baseline,sensors,defense")
     args = parser.parse_args()
+
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+    unknown = [a for a in arms if a not in ARMS]
+    if unknown:
+        print(f"未知实验臂 {unknown}；可选：{list(ARMS)}")
+        sys.exit(1)
 
     tasks = TASKS
     if args.mock:
@@ -654,7 +686,7 @@ def main():
 
     rows = []
     for task in tasks:
-        for arm in ("baseline", "defense"):
+        for arm in arms:
             for i in range(args.runs):
                 print(f"运行 {task['name']} / {arm} / #{i} ...")
                 try:
@@ -669,9 +701,9 @@ def main():
                         "hidden_detail": "",
                     })
 
-    summary = aggregate(rows)
+    summary = aggregate(rows, arms)
     with open(os.path.join(root, "results.json"), "w", encoding="utf-8") as f:
-        json.dump({"rows": rows, "summary": summary, "mock": args.mock}, f,
+        json.dump({"rows": rows, "summary": summary, "arms": arms, "mock": args.mock}, f,
                   ensure_ascii=False, indent=1)
     print_report(rows, summary, args.mock)
     print(f"\n结果已保存: {os.path.join(root, 'results.json')}")
